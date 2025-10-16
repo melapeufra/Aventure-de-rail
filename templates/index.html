@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Neybor Houses – Map & Search</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Leaflet CSS/JS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <style>
+    :root { --pad: 14px; }
+    body { margin: 0; font-family: system-ui, Arial, sans-serif; }
+    header { padding: var(--pad); }
+    .grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: var(--pad);
+      padding: var(--pad);
+    }
+    #map { width: 100%; height: 80vh; border-radius: 10px; border: 1px solid #ddd; }
+    .panel { border: 1px solid #e5e5e5; border-radius: 10px; padding: var(--pad); }
+    .field { display: grid; gap: 6px; margin-bottom: 12px; }
+    input, select, button {
+      padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px;
+    }
+    .list { max-height: 40vh; overflow: auto; border: 1px solid #eee; border-radius: 8px; padding: 6px; }
+    .house { padding: 8px; border-bottom: 1px dashed #eee; cursor: pointer; }
+    .house:last-child { border-bottom: none; }
+    .distance { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Neybor Houses – Map, Search & Distance</h2>
+  </header>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="field">
+        <label for="search">Search house by name:</label>
+        <input id="search" type="text" placeholder="e.g. Flagey 16, Louise 32…" />
+      </div>
+
+      <div class="list" id="houseList"></div>
+
+      <hr>
+
+      <div class="field">
+        <label>Distance between two houses:</label>
+        <select id="fromSelect"></select>
+        <select id="toSelect" style="margin-top:6px;"></select>
+        <button id="calcBtn" style="margin-top:10px;">Calculate distance</button>
+        <div id="distance" class="distance" style="margin-top:10px;"></div>
+      </div>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <script>
+    // Flask injects "center" variable
+    const MAP_CENTER = {{ center|tojson }};
+
+    let map, markers = [], houses = [];
+
+    // Haversine distance (km)
+    function haversine(a, b) {
+      const toRad = d => d * Math.PI / 180;
+      const R = 6371; // km
+      const dLat = toRad(b.lat - a.lat);
+      const dLon = toRad(b.lon - a.lon);
+      const lat1 = toRad(a.lat);
+      const lat2 = toRad(b.lat);
+      const x = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+      const d = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+      return R * d;
+    }
+
+    function renderList(filtered) {
+      const list = document.getElementById('houseList');
+      list.innerHTML = '';
+      filtered.forEach(h => {
+        const div = document.createElement('div');
+        div.className = 'house';
+        div.textContent = `${h.name} — ${h.address}`;
+        div.onclick = () => {
+          const marker = markers.find(m => m.options.title === h.name);
+          if (marker) {
+            map.setView([h.lat, h.lon], 16);
+            marker.openPopup();
+          }
+        };
+        list.appendChild(div);
+      });
+    }
+
+    function populateSelects() {
+      const fromSel = document.getElementById('fromSelect');
+      const toSel = document.getElementById('toSelect');
+      [fromSel, toSel].forEach(sel => { sel.innerHTML = ''; });
+      houses.forEach((h, i) => {
+        const o1 = document.createElement('option');
+        o1.value = i; o1.textContent = h.name;
+        const o2 = o1.cloneNode(true);
+        fromSel.appendChild(o1);
+        toSel.appendChild(o2);
+      });
+    }
+
+    function setupDistanceCalc() {
+      document.getElementById('calcBtn').onclick = () => {
+        const i1 = parseInt(document.getElementById('fromSelect').value, 10);
+        const i2 = parseInt(document.getElementById('toSelect').value, 10);
+        if (isNaN(i1) || isNaN(i2)) return;
+        const km = haversine(houses[i1], houses[i2]);
+        document.getElementById('distance').textContent = `Distance: ${km.toFixed(2)} km`;
+      };
+    }
+
+    // Init map
+    map = L.map('map').setView(MAP_CENTER, 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    // Load data from Flask
+    fetch('/data.json')
+      .then(r => r.json())
+      .then(data => {
+        houses = data;
+
+        // Markers
+        houses.forEach(h => {
+          const marker = L.marker([h.lat, h.lon], { title: h.name })
+            .addTo(map)
+            .bindPopup(`<b>${h.name}</b><br>${h.address}`);
+          markers.push(marker);
+        });
+
+        // UI
+        populateSelects();
+        renderList(houses);
+        setupDistanceCalc();
+
+        // Search
+        const search = document.getElementById('search');
+        search.addEventListener('input', () => {
+          const q = search.value.toLowerCase();
+          const filtered = houses.filter(h =>
+            h.name.toLowerCase().includes(q) || h.address.toLowerCase().includes(q)
+          );
+          renderList(filtered);
+        });
+      });
+  </script>
+</body>
+</html>
